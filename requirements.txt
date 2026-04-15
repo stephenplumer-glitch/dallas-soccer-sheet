@@ -2,3 +2,5 @@ anthropic
 gspread
 google-auth
 requests
+playwright
+ 
