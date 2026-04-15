@@ -11,7 +11,7 @@ from playwright.sync_api import sync_playwright
 # ── Config ──────────────────────────────────────────────────────────────────
 SPREADSHEET_ID = "1Iu_A3hs0WbsZ9HELl0von2ihNfiKeEM2zd1OtlLxZrc"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-COSM_URL = "https://www.cosm.com/categories/sports/soccer"
+COSM_DALLAS_URL = "https://www.cosm.com/dallas/categories/sports/soccer"
  
 SOCCER_KEYWORDS = ["premier league", "champions league", "efl", "epl", "ucl", "fa cup"]
  
@@ -29,86 +29,88 @@ Premier League,Home,Away,Day,Date,KO Time,OPEN,Notes
 - If no matches in that time window are found, return the single word: NONE"""
  
  
-def parse_events_from_text(text, location="dallas"):
-    """Parse soccer events from page text, only for the specified location section."""
+def get_cosm_fixtures():
+    """Use Playwright to scrape the Cosm Dallas soccer page directly."""
     rows = []
     now = datetime.now()
     seen = set()
  
-    # Split text into Dallas and LA sections
-    text_lower = text.lower()
-    dallas_start = text_lower.find("cosm dallas")
-    la_start = text_lower.find("cosm los angeles")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
+        )
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 800},
+            locale="en-US",
+        )
+        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
  
-    if dallas_start == -1:
-        print(f"  'Cosm Dallas' not found in page text")
-        print(f"  Full text:\n{text[:2000]}")
-        return rows
+        page = context.new_page()
+        print(f"  Opening {COSM_DALLAS_URL}...")
+        page.goto(COSM_DALLAS_URL, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(5000)
  
-    # Extract just the Dallas section (stop before LA section if it comes after)
-    if la_start != -1 and la_start > dallas_start:
-        dallas_text = text[dallas_start:la_start]
-    else:
-        dallas_text = text[dallas_start:]
+        text = page.inner_text("body")
+        print(f"  Page text length: {len(text)}")
+        print(f"  Page preview:\n{text[:600]}")
+        browser.close()
  
-    print(f"  Dallas section length: {len(dallas_text)}")
-    print(f"  Dallas section preview: {dallas_text[:500]}")
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
  
-    lines = [l.strip() for l in dallas_text.splitlines() if l.strip()]
- 
-    # The page format is:
-    # Day  Month Date  Time
-    # Title
-    # So look for date+time lines followed by event title lines
+    # Parse events — date and time appear on lines before the event title
+    # Pattern in page:
+    #   Wed
+    #   Apr 15
+    #   12:00pm
+    #   Champions League...: Arsenal vs. Sporting CP
+    current_day = ""
+    current_month_day = ""
+    current_time = ""
  
     i = 0
-    current_date = None
-    current_time = None
- 
     while i < len(lines):
         line = lines[i]
  
-        # Check for date pattern: "Wed Apr 15" or "Sat Apr 18"
-        date_match = re.search(
-            r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+'
-            r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})',
-            line, re.I
-        )
-        if date_match:
-            current_date = line
-            current_time = None
-            # Look for time on same line or next line
-            time_match = re.search(r'(\d{1,2}:\d{2}\s*[ap]m)', line, re.I)
-            if time_match:
-                current_time = time_match.group(1)
+        # Day of week
+        if re.match(r'^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$', line, re.I):
+            current_day = line
+            current_month_day = ""
+            current_time = ""
             i += 1
             continue
  
-        # Check for standalone time
-        time_match = re.search(r'^(\d{1,2}:\d{2}\s*[ap]m)$', line, re.I)
+        # Month + day: "Apr 15"
+        month_day = re.match(r'^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})$', line, re.I)
+        if month_day:
+            current_month_day = line
+            current_time = ""
+            i += 1
+            continue
+ 
+        # Time: "12:00pm" or "8:00am"
+        time_match = re.match(r'^(\d{1,2}:\d{2}[ap]m)$', line, re.I)
         if time_match:
-            current_time = time_match.group(1)
+            current_time = line
             i += 1
             continue
  
-        # Check if this is a soccer event title
+        # Soccer event title
         line_lower = line.lower()
         if any(kw in line_lower for kw in SOCCER_KEYWORDS) and "vs" in line_lower:
-            print(f"  Found event: {line} | date={current_date} | time={current_time}")
+            print(f"  Event: {line} | day={current_day} month_day={current_month_day} time={current_time}")
  
-            if not current_date:
-                print(f"  Skipping - no date context")
+            if not current_month_day or not current_time:
+                print(f"  Skipping - missing date/time context")
                 i += 1
                 continue
  
             # Parse date
             try:
-                dm = re.search(
-                    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})',
-                    current_date, re.I
-                )
-                month_str = dm.group(1)[:3]
-                day_num = dm.group(2)
+                md = re.match(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})', current_month_day, re.I)
+                month_str = md.group(1)[:3]
+                day_num = int(md.group(2))
                 year = now.year
                 dt = datetime.strptime(f"{month_str} {day_num} {year}", "%b %d %Y")
                 if dt < now - timedelta(days=1):
@@ -121,18 +123,17 @@ def parse_events_from_text(text, location="dallas"):
                 i += 1
                 continue
  
-            # Parse time
-            ko_dt = dt
-            if current_time:
-                try:
-                    t_str = current_time.strip().upper().replace(" ", "")
-                    t = datetime.strptime(t_str, "%I:%M%p")
-                    ko_dt = dt.replace(hour=t.hour, minute=t.minute)
-                except Exception as e:
-                    print(f"  Time parse error: {e} for '{current_time}'")
+            # Parse time — page shows PT, add 2 hours to get CT
+            try:
+                t = datetime.strptime(current_time.upper(), "%I:%M%p")
+                ko_dt_pt = dt.replace(hour=t.hour, minute=t.minute)
+                ko_dt_ct = ko_dt_pt + timedelta(hours=2)  # PT -> CT
+            except Exception as e:
+                print(f"  Time parse error: {e}")
+                ko_dt_ct = dt
  
             # Dedup
-            dedup_key = f"{line}_{ko_dt.strftime('%Y%m%d%H%M')}"
+            dedup_key = f"{line}_{ko_dt_ct.strftime('%Y%m%d%H%M')}"
             if dedup_key in seen:
                 i += 1
                 continue
@@ -162,57 +163,19 @@ def parse_events_from_text(text, location="dallas"):
                 else:
                     home = line
  
-            day_name = ko_dt.strftime("%A")
-            date_out = ko_dt.strftime("%d-%b")
-            ko_time = ko_dt.strftime("%I:%M %p").lstrip("0")
+            day_name = ko_dt_ct.strftime("%A")
+            date_out = ko_dt_ct.strftime("%d-%b")
+            ko_time = ko_dt_ct.strftime("%I:%M %p").lstrip("0")
             finish_delta = timedelta(hours=2.5) if comp == "Champions League" else timedelta(hours=2)
-            finish_time = (ko_dt + finish_delta).strftime("%I:%M %p").lstrip("0")
+            finish_time = (ko_dt_ct + finish_delta).strftime("%I:%M %p").lstrip("0")
             notes = "Could run longer with extra time" if comp == "Champions League" else ""
  
             rows.append([comp, home, away, day_name, date_out, ko_time, finish_time, notes])
-            print(f"  Parsed: {comp} | {home} vs {away} | {day_name} {date_out} {ko_time}")
+            print(f"  Parsed: {comp} | {home} vs {away} | {day_name} {date_out} {ko_time} CT")
  
         i += 1
  
     return rows
- 
- 
-def get_cosm_fixtures():
-    """Use Playwright to scrape the Cosm Dallas soccer page."""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
-        )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 800},
-            locale="en-US",
-        )
-        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
- 
-        page = context.new_page()
-        print(f"  Opening {COSM_URL}...")
-        page.goto(COSM_URL, wait_until="domcontentloaded", timeout=60000)
- 
-        # Click Dallas location button
-        try:
-            page.wait_for_selector("button:has-text('Dallas'), [data-location='dallas']", timeout=10000)
-            dallas_btn = page.locator("button:has-text('Dallas')").first
-            dallas_btn.click()
-            print("  Clicked Dallas button")
-            page.wait_for_timeout(3000)
-        except Exception as e:
-            print(f"  Could not click Dallas button: {e}")
- 
-        # Wait for content
-        page.wait_for_timeout(5000)
- 
-        text = page.inner_text("body")
-        print(f"  Page text length: {len(text)}")
-        browser.close()
- 
-    return parse_events_from_text(text)
  
  
 def get_pl_fixtures(client):
