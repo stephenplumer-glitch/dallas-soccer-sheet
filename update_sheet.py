@@ -3,13 +3,18 @@ import gspread
 from google.oauth2.service_account import Credentials
 import json
 import os
+import time
 from datetime import datetime
 
 # ── Config ──────────────────────────────────────────────────────────────────
 SPREADSHEET_ID = "1Iu_A3hs0WbsZ9HELl0von2ihNfiKeEM2zd1OtlLxZrc"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-COSM_PROMPT = """Search the web for upcoming soccer matches being shown at Cosm Dallas.
+COSM_PROMPT = """Search the web for upcoming soccer matches at Cosm Dallas. Try searching:
+- "Cosm Dallas soccer" site:twitter.com OR site:x.com
+- "Cosm Dallas soccer schedule 2026"
+- "cosm.com soccer dallas upcoming"
+
 Return ONLY matches that haven't happened yet (today is {today}).
 Return each match on a new line in this EXACT comma-separated format with no headers, no extra text, no blank lines:
 Competition,Home,Away,Day,Date,KO Time,Finish Time,Notes
@@ -36,7 +41,7 @@ def get_fixtures(client, prompt):
     """Call Claude with web search and return lines of fixture data."""
     today = datetime.now().strftime("%d-%b-%Y")
     response = client.messages.create(
-        model="claude-opus-4-5",
+        model="claude-haiku-4-5-20251001",
         max_tokens=1000,
         tools=[{"type": "web_search_20250305", "name": "web_search"}],
         messages=[{"role": "user", "content": prompt.format(today=today)}],
@@ -99,6 +104,10 @@ def main():
     cosm_rows = get_fixtures(client, COSM_PROMPT)
     cosm_sheet = spreadsheet.worksheet("Cosm")
     append_to_sheet(cosm_sheet, cosm_rows)
+
+    # Wait to avoid hitting rate limits
+    print("Waiting 30 seconds before next API call...")
+    time.sleep(30)
 
     # ── PL Early KOs tab ─────────────────────────────────────────────────────
     print("Fetching PL early kick-offs...")
