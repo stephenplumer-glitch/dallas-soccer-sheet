@@ -13,7 +13,7 @@ SPREADSHEET_ID = "1Iu_A3hs0WbsZ9HELl0von2ihNfiKeEM2zd1OtlLxZrc"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 COSM_URL = "https://www.cosm.com/categories/sports/soccer"
  
-SOCCER_KEYWORDS = ["premier league", "champions league", "efl", "epl", "ucl", "fa cup", "league cup"]
+SOCCER_KEYWORDS = ["premier league", "champions league", "efl", "epl", "ucl", "fa cup"]
  
 PL_PROMPT = """Search the web for upcoming Premier League matches in the next 3 weeks.
 Return ONLY matches where kick-off is between 6:30 AM CT and 9:00 AM CT (Central Time / Dallas time), and only matches that haven't happened yet (today is {today}).
@@ -33,36 +33,45 @@ def get_cosm_fixtures():
     """Use Playwright to scrape the Cosm Dallas soccer page."""
     rows = []
     now = datetime.now()
+    seen = set()  # avoid duplicates
  
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
  
         print(f"  Opening {COSM_URL}...")
-        page.goto(COSM_URL, wait_until="networkidle", timeout=30000)
+        page.goto(COSM_URL, timeout=60000)
  
-        # Make sure Dallas is selected — click the Dallas location button if present
+        # Wait for event cards to actually render
         try:
-            dallas_btn = page.locator("button:has-text('Dallas'), a:has-text('Dallas')").first
-            if dallas_btn.is_visible():
-                dallas_btn.click()
-                page.wait_for_load_state("networkidle")
-                print("  Clicked Dallas location selector")
+            page.wait_for_selector("h3, h2, [class*='event'], [class*='card'], [class*='title']",
+                                   timeout=15000)
+        except Exception:
+            print("  Selector wait timed out, continuing anyway...")
+ 
+        # Extra wait for JS rendering
+        page.wait_for_timeout(5000)
+ 
+        # Make sure Dallas is selected
+        try:
+            dallas = page.locator("button:has-text('Dallas'), [aria-label*='Dallas'], option:has-text('Dallas')").first
+            if dallas.is_visible():
+                dallas.click()
+                page.wait_for_timeout(3000)
+                print("  Clicked Dallas selector")
         except Exception:
             pass
  
-        # Wait for event cards to load
-        page.wait_for_timeout(3000)
- 
-        # Get the full page text
-        content = page.content()
         text = page.inner_text("body")
-        print(f"  Page loaded, text length: {len(text)}")
+        print(f"  Page text length: {len(text)}")
+        # Print first 500 chars to help debug
+        print(f"  Page preview: {text[:500]}")
  
         browser.close()
  
-    # Parse events from page text
-    # Look for patterns like "Premier League: Arsenal vs Newcastle\nSat, Apr 25\n11:30 AM"
     lines = [l.strip() for l in text.splitlines() if l.strip()]
  
     i = 0
@@ -70,54 +79,52 @@ def get_cosm_fixtures():
         line = lines[i]
         line_lower = line.lower()
  
-        # Check if this line is a soccer event title
         if any(kw in line_lower for kw in SOCCER_KEYWORDS) and ("vs" in line_lower or "v." in line_lower):
             print(f"  Found event: {line}")
             title = line
  
-            # Look ahead for date and time in next few lines
+            # Look ahead up to 10 lines for date and time
             date_str = ""
             time_str = ""
-            for j in range(i + 1, min(i + 8, len(lines))):
+            for j in range(i + 1, min(i + 10, len(lines))):
                 next_line = lines[j]
-                # Date pattern: "Sat, Apr 25" or "April 25" or "Apr 25"
+                # Date: "Apr 19" or "Apr 19," or "Wed, Apr 19"
                 date_match = re.search(
-                    r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*[,.]?\s+'
-                    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})',
+                    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2})',
                     next_line, re.I
                 )
                 if date_match and not date_str:
                     date_str = next_line
-                # Time pattern: "11:30 AM" or "2:00 PM"
-                time_match = re.search(r'(\d{1,2}:\d{2}\s*[AP]M)', next_line, re.I)
+                # Time: "10:30am" or "10:30 AM" or "at 10:30am"
+                time_match = re.search(r'(\d{1,2}:\d{2}\s*[ap]m)', next_line, re.I)
                 if time_match and not time_str:
                     time_str = time_match.group(1)
                 if date_str and time_str:
                     break
  
             if not date_str:
+                print(f"  No date found for: {title}")
                 i += 1
                 continue
  
             # Parse date
             try:
                 date_match = re.search(
-                    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})',
+                    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2})',
                     date_str, re.I
                 )
-                if not date_match:
-                    i += 1
-                    continue
-                month_str, day_num = date_match.groups()
+                month_str = date_match.group(1)
+                day_num = date_match.group(2)
                 year = now.year
-                dt = datetime.strptime(f"{month_str} {day_num} {year}", "%b %d %Y")
+                dt = datetime.strptime(f"{month_str[:3]} {day_num} {year}", "%b %d %Y")
                 if dt < now - timedelta(days=1):
                     dt = dt.replace(year=year + 1)
                 if dt < now - timedelta(days=1):
+                    print(f"  Skipping past event: {title}")
                     i += 1
                     continue
             except Exception as e:
-                print(f"  Date parse error: {e}")
+                print(f"  Date parse error: {e} for '{date_str}'")
                 i += 1
                 continue
  
@@ -125,38 +132,43 @@ def get_cosm_fixtures():
             ko_dt = dt
             if time_str:
                 try:
-                    t = datetime.strptime(time_str.strip(), "%I:%M %p")
+                    t = datetime.strptime(time_str.strip().upper(), "%I:%M%p")
                     ko_dt = dt.replace(hour=t.hour, minute=t.minute)
                 except Exception:
                     try:
-                        t = datetime.strptime(time_str.strip(), "%I:%M%p")
+                        t = datetime.strptime(time_str.strip().upper(), "%I:%M %p")
                         ko_dt = dt.replace(hour=t.hour, minute=t.minute)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"  Time parse error: {e} for '{time_str}'")
  
-            # Determine competition
+            # Deduplicate
+            dedup_key = f"{title}_{ko_dt.strftime('%Y%m%d')}"
+            if dedup_key in seen:
+                i += 1
+                continue
+            seen.add(dedup_key)
+ 
+            # Competition
             comp = "Soccer"
-            title_lower = title.lower()
-            if "premier league" in title_lower or "epl" in title_lower:
+            tl = title.lower()
+            if "premier league" in tl or "epl" in tl:
                 comp = "Premier League"
-            elif "champions league" in title_lower or "ucl" in title_lower:
+            elif "champions league" in tl or "ucl" in tl:
                 comp = "Champions League"
-            elif "efl" in title_lower:
+            elif "efl" in tl:
                 comp = "EFL"
-            elif "fa cup" in title_lower:
+            elif "fa cup" in tl:
                 comp = "FA Cup"
  
-            # Extract teams
+            # Teams
             home, away = "", ""
-            team_match = re.search(r':\s*(.+?)\s+vs\.?\s+(.+?)$', title, re.I)
+            team_match = re.search(r':\s*(.+?)\s+vs\.?\s+(.+?)(?:\s*$)', title, re.I)
             if team_match:
-                home = team_match.group(1).strip()
-                away = team_match.group(2).strip()
+                home, away = team_match.group(1).strip(), team_match.group(2).strip()
             else:
                 vs_match = re.search(r'(.+?)\s+vs\.?\s+(.+)', title, re.I)
                 if vs_match:
-                    home = vs_match.group(1).strip()
-                    away = vs_match.group(2).strip()
+                    home, away = vs_match.group(1).strip(), vs_match.group(2).strip()
                 else:
                     home = title
  
@@ -176,7 +188,6 @@ def get_cosm_fixtures():
  
  
 def get_pl_fixtures(client):
-    """Call Claude with web search and return PL early KO rows."""
     today = datetime.now().strftime("%d-%b-%Y")
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
@@ -188,10 +199,8 @@ def get_pl_fixtures(client):
     for block in response.content:
         if block.type == "text":
             text = block.text.strip()
- 
     if not text or text == "NONE":
         return []
- 
     rows = []
     for line in text.splitlines():
         line = line.strip()
@@ -226,7 +235,6 @@ def main():
     anthropic_key = os.environ["ANTHROPIC_API_KEY"]
     client = anthropic.Anthropic(api_key=anthropic_key)
  
-    # ── Cosm tab ─────────────────────────────────────────────────────────────
     print("Fetching Cosm Dallas fixtures via Playwright...")
     cosm_rows = get_cosm_fixtures()
     cosm_sheet = spreadsheet.worksheet("Cosm")
@@ -235,7 +243,6 @@ def main():
     print("Waiting 60 seconds before next API call...")
     time.sleep(60)
  
-    # ── PL Early KOs tab ─────────────────────────────────────────────────────
     print("Fetching PL early kick-offs...")
     pl_rows = get_pl_fixtures(client)
     pl_sheet = spreadsheet.worksheet("PL Early KOs")
