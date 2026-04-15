@@ -33,42 +33,46 @@ def get_cosm_fixtures():
     """Use Playwright to scrape the Cosm Dallas soccer page."""
     rows = []
     now = datetime.now()
-    seen = set()  # avoid duplicates
+    seen = set()
  
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        # Use a realistic browser fingerprint to avoid bot detection
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ]
         )
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 800},
+            locale="en-US",
+        )
+ 
+        # Hide webdriver flag
+        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+ 
         page = context.new_page()
- 
         print(f"  Opening {COSM_URL}...")
-        page.goto(COSM_URL, timeout=60000)
+        page.goto(COSM_URL, wait_until="domcontentloaded", timeout=60000)
  
-        # Wait for event cards to actually render
+        # Wait for any event title to appear
         try:
-            page.wait_for_selector("h3, h2, [class*='event'], [class*='card'], [class*='title']",
-                                   timeout=15000)
+            page.wait_for_selector("h3:has-text('vs'), h2:has-text('vs'), [class*='title']:has-text('vs')", timeout=20000)
+            print("  Event titles found on page")
         except Exception:
-            print("  Selector wait timed out, continuing anyway...")
+            print("  Timed out waiting for event titles, trying scroll...")
+            # Try scrolling to trigger lazy loading
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(3000)
  
-        # Extra wait for JS rendering
-        page.wait_for_timeout(5000)
- 
-        # Make sure Dallas is selected
-        try:
-            dallas = page.locator("button:has-text('Dallas'), [aria-label*='Dallas'], option:has-text('Dallas')").first
-            if dallas.is_visible():
-                dallas.click()
-                page.wait_for_timeout(3000)
-                print("  Clicked Dallas selector")
-        except Exception:
-            pass
+        page.wait_for_timeout(3000)
  
         text = page.inner_text("body")
         print(f"  Page text length: {len(text)}")
-        # Print first 500 chars to help debug
-        print(f"  Page preview: {text[:500]}")
+        print(f"  Page preview: {text[:800]}")
  
         browser.close()
  
@@ -83,19 +87,16 @@ def get_cosm_fixtures():
             print(f"  Found event: {line}")
             title = line
  
-            # Look ahead up to 10 lines for date and time
             date_str = ""
             time_str = ""
             for j in range(i + 1, min(i + 10, len(lines))):
                 next_line = lines[j]
-                # Date: "Apr 19" or "Apr 19," or "Wed, Apr 19"
                 date_match = re.search(
                     r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2})',
                     next_line, re.I
                 )
                 if date_match and not date_str:
                     date_str = next_line
-                # Time: "10:30am" or "10:30 AM" or "at 10:30am"
                 time_match = re.search(r'(\d{1,2}:\d{2}\s*[ap]m)', next_line, re.I)
                 if time_match and not time_str:
                     time_str = time_match.group(1)
@@ -107,7 +108,6 @@ def get_cosm_fixtures():
                 i += 1
                 continue
  
-            # Parse date
             try:
                 date_match = re.search(
                     r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2})',
@@ -120,35 +120,27 @@ def get_cosm_fixtures():
                 if dt < now - timedelta(days=1):
                     dt = dt.replace(year=year + 1)
                 if dt < now - timedelta(days=1):
-                    print(f"  Skipping past event: {title}")
                     i += 1
                     continue
             except Exception as e:
-                print(f"  Date parse error: {e} for '{date_str}'")
+                print(f"  Date parse error: {e}")
                 i += 1
                 continue
  
-            # Parse time
             ko_dt = dt
             if time_str:
                 try:
-                    t = datetime.strptime(time_str.strip().upper(), "%I:%M%p")
+                    t = datetime.strptime(time_str.strip().upper().replace(" ", ""), "%I:%M%p")
                     ko_dt = dt.replace(hour=t.hour, minute=t.minute)
-                except Exception:
-                    try:
-                        t = datetime.strptime(time_str.strip().upper(), "%I:%M %p")
-                        ko_dt = dt.replace(hour=t.hour, minute=t.minute)
-                    except Exception as e:
-                        print(f"  Time parse error: {e} for '{time_str}'")
+                except Exception as e:
+                    print(f"  Time parse error: {e} for '{time_str}'")
  
-            # Deduplicate
             dedup_key = f"{title}_{ko_dt.strftime('%Y%m%d')}"
             if dedup_key in seen:
                 i += 1
                 continue
             seen.add(dedup_key)
  
-            # Competition
             comp = "Soccer"
             tl = title.lower()
             if "premier league" in tl or "epl" in tl:
@@ -160,7 +152,6 @@ def get_cosm_fixtures():
             elif "fa cup" in tl:
                 comp = "FA Cup"
  
-            # Teams
             home, away = "", ""
             team_match = re.search(r':\s*(.+?)\s+vs\.?\s+(.+?)(?:\s*$)', title, re.I)
             if team_match:
@@ -240,8 +231,8 @@ def main():
     cosm_sheet = spreadsheet.worksheet("Cosm")
     append_to_sheet(cosm_sheet, cosm_rows)
  
-    print("Waiting 60 seconds before next API call...")
-    time.sleep(60)
+    print("Waiting 90 seconds before next API call...")
+    time.sleep(90)
  
     print("Fetching PL early kick-offs...")
     pl_rows = get_pl_fixtures(client)
