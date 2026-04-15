@@ -61,11 +61,9 @@ def get_cosm_fixtures():
         text = page.inner_text("body")
         print(f"  Page text length: {len(text)}")
  
-        if "los angeles" in text.lower():
-            print("  Page showing LA times — will add 2hrs PT->CT")
-            pt_offset = 2
-        else:
-            pt_offset = 0
+        # Cosm page times are already in CT regardless of location shown
+        pt_offset = 0
+        print("  Using page times as CT directly")
  
         browser.close()
  
@@ -249,7 +247,8 @@ def get_pl_fixtures(client):
         if not line or line == "NONE":
             continue
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) >= 7 and parts[0].lower() not in ("competition", "comp"):
+        # Skip header rows and any row where date field looks like a header
+        if len(parts) >= 7 and parts[0].lower() not in ("competition", "comp") and parts[4].lower() != "date":
             rows.append(parts)
     return rows
  
