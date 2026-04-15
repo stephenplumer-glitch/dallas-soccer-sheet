@@ -1,29 +1,36 @@
-name: Update Dallas Soccer Sheet
 
+Copy
+
+name: Update Dallas Soccer Sheet
+ 
 on:
   schedule:
     # Runs every Monday at 9:00 AM CT (15:00 UTC)
     - cron: "0 15 * * 1"
-  workflow_dispatch: # allows manual trigger from GitHub UI
-
+  workflow_dispatch:
+ 
 jobs:
   update-sheet:
     runs-on: ubuntu-latest
-
+ 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
+ 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
+ 
       - name: Install dependencies
-        run: pip install anthropic gspread google-auth
-
+        run: pip install -r requirements.txt
+ 
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+ 
       - name: Run update script
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
         run: python update_sheet.py
+ 
