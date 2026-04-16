@@ -259,17 +259,47 @@ def get_pl_fixtures(client):
     return rows
  
  
+def already_in_sheet(existing_rows, home, away, date):
+    """Check if a fixture already exists in the sheet by home, away and date."""
+    for row in existing_rows:
+        # Pad row to avoid index errors
+        while len(row) < 6:
+            row.append("")
+        # Columns: A=empty, B=comp, C=home, D=away, E=day, F=date
+        existing_home = row[2].strip().lower() if len(row) > 2 else ""
+        existing_away = row[3].strip().lower() if len(row) > 3 else ""
+        existing_date = row[5].strip().lower() if len(row) > 5 else ""
+        if (existing_home == home.strip().lower() and
+                existing_away == away.strip().lower() and
+                existing_date == date.strip().lower()):
+            return True
+    return False
+ 
+ 
 def append_to_sheet(sheet, rows):
     if not rows:
         print(f"  No new fixtures to add to '{sheet.title}'")
         return
     existing = sheet.get_all_values()
     next_row = len(existing) + 1
+    added = 0
+    skipped = 0
     for row in rows:
+        home = row[1] if len(row) > 1 else ""
+        away = row[2] if len(row) > 2 else ""
+        date = row[4] if len(row) > 4 else ""
+        if already_in_sheet(existing, home, away, date):
+            print(f"  Skipping (already exists): {home} vs {away} on {date}")
+            skipped += 1
+            continue
         padded = row[:8] + [""] * (8 - len(row[:8]))
         sheet.insert_row([""] + padded, next_row)
+        # Add to existing so we don't double-add within same run
+        existing.append([""] + padded)
         next_row += 1
-        print(f"  Added: {' vs '.join(row[1:3])} on {row[4]}")
+        added += 1
+        print(f"  Added: {home} vs {away} on {date}")
+    print(f"  Summary: {added} added, {skipped} skipped (already in sheet)")
  
  
 def main():
