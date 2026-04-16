@@ -13,7 +13,7 @@ SPREADSHEET_ID = "1Iu_A3hs0WbsZ9HELl0von2ihNfiKeEM2zd1OtlLxZrc"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 COSM_URL = "https://www.cosm.com/categories/sports/soccer"
  
-SOCCER_KEYWORDS = ["premier league", "champions league", "efl", "epl", "ucl", "fa cup"]
+SOCCER_KEYWORDS = ["premier league", "champions league", "efl", "epl", "ucl", "fa cup", "matchday live"]
  
 PL_PROMPT = """Search the web for upcoming Premier League matches in the next 3 weeks.
 Return ONLY matches where kick-off is between 6:30 AM CT and 9:00 AM CT (Central Time / Dallas time), and only matches that haven't happened yet (today is {today}).
@@ -61,9 +61,9 @@ def get_cosm_fixtures():
         text = page.inner_text("body")
         print(f"  Page text length: {len(text)}")
  
-        # Cosm page times are already in CT regardless of location shown
-        pt_offset = 0
-        print("  Using page times as CT directly")
+        # Page always shows PT times — add 2hrs to get CT
+        pt_offset = 2
+        print("  Converting PT to CT (+2hrs)")
  
         browser.close()
  
@@ -131,9 +131,15 @@ def get_cosm_fixtures():
                 continue
             seen.add(dedup_key)
  
+            # Normalise "X Matchday Live + X vs. Y" -> "X vs. Y"
+            title = line
+            matchday_match = re.search(r'.+\+\s*(.+vs.+)', title, re.I)
+            if matchday_match:
+                title = matchday_match.group(1).strip()
+ 
             comp = "Soccer"
-            tl = line.lower()
-            if "premier league" in tl:
+            tl = title.lower()
+            if "premier league" in tl or "epl" in tl or line.lower().startswith("man city matchday"):
                 comp = "Premier League"
             elif "champions league" in tl:
                 comp = "Champions League"
@@ -143,15 +149,15 @@ def get_cosm_fixtures():
                 comp = "FA Cup"
  
             home, away = "", ""
-            team_match = re.search(r':\s*(.+?)\s+vs\.?\s+(.+?)$', line, re.I)
+            team_match = re.search(r':\s*(.+?)\s+vs\.?\s+(.+?)$', title, re.I)
             if team_match:
                 home, away = team_match.group(1).strip(), team_match.group(2).strip()
             else:
-                vs_match = re.search(r'(.+?)\s+vs\.?\s+(.+)', line, re.I)
+                vs_match = re.search(r'(.+?)\s+vs\.?\s+(.+)', title, re.I)
                 if vs_match:
                     home, away = vs_match.group(1).strip(), vs_match.group(2).strip()
                 else:
-                    home = line
+                    home = title
  
             day_name = ko_dt.strftime("%A")
             date_out = ko_dt.strftime("%d-%b")
@@ -287,8 +293,8 @@ def main():
     cosm_sheet = spreadsheet.worksheet("Cosm")
     append_to_sheet(cosm_sheet, cosm_rows)
  
-    print("Waiting 90 seconds before PL search...")
-    time.sleep(90)
+    print("Waiting 120 seconds before PL search...")
+    time.sleep(120)
  
     # ── PL Early KOs tab ─────────────────────────────────────────────────────
     print("Fetching PL early kick-offs...")
